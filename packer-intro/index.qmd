@@ -1,0 +1,482 @@
+---
+author:
+  - "Daniel Matthews"
+date: 2025-05-08
+format: revealjs
+revealjs-plugins:
+  - pointer
+subtitle: "[ARC DevOps Hour](https://www.ucl.ac.uk/advanced-research-computing/collaborations-consultancy/devops-collaborations)"
+title: "Packer Intro"
+---
+
+## Who am I?
+
+::: {.nonincremental}
+
+- Co-lead of Medical Imaging Research Software Group (ARC Collaborations sub-group)
+- 50% with Environments product over the last two years
+
+:::
+
+## What is Packer?
+
+- Packer is a Hashicorp tool that lets you create identical machine images for multiple platforms from a single source template.
+- A machine image is a single static unit that contains a pre-configured operating system and installed software.
+- Can replace complex CI/CD pipelines.
+
+::: {.notes}
+Achieve the same configuration for multiple OS builds
+:::
+
+---
+
+![Packer workflow](./assets/packer.drawio.png)
+
+::: {.notes}
+- Remember to press "Q" for pointer
+- Keep templates in version control
+- Template defines a build which can use one or more plugins
+- Builders create machines from (for example) and turns them into images:
+  - container images
+  - vagrant boxes
+  - iso files
+  - qcow2 files
+- Provisioners can customise the machine these can be:
+  - Ansible playbooks
+  - Scripts
+  - Any other configuration tool
+- The artifacts produced by the build are machine images
+  - container images
+  - qcow2 files
+  - vagrant boxes
+- Post processors can be employed to push the artifacts to a registry or create infrastructure (e.g. using Terraform)
+:::
+
+## Templates
+
+::: {.nonincremental}
+
+- Like Terraform Packer templates are written in Hashicorp Configuration Language (HCL)
+
+```{.packer code-line-numbers="1-4|7-11"}
+<BLOCK TYPE> "<BLOCK LABEL>" "<BLOCK LABEL>" {
+  # Block body
+  <IDENTIFIER> = <EXPRESSION> # Argument
+}
+
+# Source block from `amazon-instance` builder in Amazon plugin
+source "amazon-instance" "basic-example" {
+  region        = "eu-west-2"
+  source_ami    = "ami-d9d6a6b0"
+  instance_type = "m1.small"
+  ssh_username  = "ubuntu"
+}
+```
+:::
+
+- Can also be written in JSON (was used prior to HCL) but is not recommended.
+
+## Blocks
+
+#### packer.pkr.hcl
+
+```{.packer}
+packer {
+  required_plugins {
+    ansible = {
+      version = ">= 1.1.2"
+      source  = "github.com/hashicorp/ansible"
+    }
+  }
+}
+```
+
+## Blocks
+
+#### variables.pkr.hcl
+
+```{.packer}
+variable "foo" {
+  type        = string
+  default     = "the default value of the `foo` variable"
+  description = "description of the `foo` variable"
+  sensitive   = false
+  # When a variable is sensitive all string-values from that variable
+  # will be obfuscated from Packer's output.
+}
+```
+
+- Can be set at the command line, from a file or environment variables (when prefixed with `PKR_VAR_`)
+
+## Blocks
+
+#### source.pkr.hcl
+
+::: {.nonincremental}
+
+```{.packer}
+source "amazon-instance" "basic-example" {
+  region        = "eu-west-2"
+  source_ami    = "ami-d9d6a6b0"
+  instance_type = "m1.small"
+  ssh_username  = "ubuntu"
+}
+```
+
+- Top-level source block defines reusable builder configuration blocks
+
+:::
+
+## Blocks
+
+### build.pkr.hcl
+
+```{.packer code-line-numbers="|8-15|17-21|23-26|28-31"}
+build {
+  # use the `name` field to name a build in the logs.
+  # For example this present config will display
+  # "buildname.amazon-ebs.example-1" and
+  # "buildname.amazon-ebs.example-2"
+  name = "buildname"
+
+  source "source.amazon-ebs.example-1" {
+    # Use the singular `source` block set specific fields.
+    # Note that fields cannot be overwritten, in other words,
+    # you cannot set the 'output' field from the top-level
+    # source block and here.
+    output = "different value"
+    name   = "differentname"
+  }
+
+  sources = [
+    # use the optional plural `sources` list to simply use a `source`
+    # without changing any field.
+    "source.amazon-ebs.example-2",
+  ]
+
+  # runs on the remote machine
+  provisioner "shell" {
+    scripts = fileset(".", "scripts/{install,secure}.sh")
+  }
+
+  # runs on the machine where Packer is running
+  post-processor "shell-local" {
+    inline = ["echo Hello World from ${source.type}.${source.name}"]
+  }
+}
+```
+
+---
+
+## RHEL image
+
+#### source
+
+```{.packer code-line-numbers="|3-7|20-26|28|43-44"}
+source "qemu" "rhel" {
+  accelerator       = "kvm"
+  boot_command      = [
+    "<up><wait><wait>e<down><down><end><bs><bs><bs><bs><bs>",
+    "inst.ks=http://{{ .HTTPIP }}:{{ .HTTPPort }}/ks.cfg",
+    "<leftCtrlOn>x<leftCtrlOff>"
+  ]
+  boot_wait         = "20s"
+  communicator      = "ssh"
+  disk_cache        = "none"
+  disk_compression  = true
+  disk_discard      = "unmap"
+  disk_interface    = "virtio"
+  disk_size         = "40Gi"
+  efi_boot          = true
+  efi_firmware_code = "/usr/share/edk2/ovmf/OVMF_CODE.fd"
+  efi_firmware_vars = "/usr/share/edk2/ovmf/OVMF_VARS.fd"
+  format            = "qcow2"
+  headless          = true
+  http_content = {
+    "/ks.cfg" = templatefile("http/rhel9-ks.cfg.pkrtpl", {
+      root_password       = var.root_password
+      root_ssh_public_key = data.sshkey.install.public_key
+      os_user             = var.os_user
+    })
+  }
+  iso_checksum     = "rhel-9.4-x86_64-dvd.checksum"
+  iso_url          = "rhel-9.4-x86_64-dvd.iso"
+  memory           = "8Gi"
+  machine_type     = "q35"
+  net_device       = "virtio-net"
+  output_directory = "./build"
+  qemu_binary      = "/usr/libexec/qemu-kvm"
+  qemuargs = [
+    ["-cpu", "host,+nx"],
+    ["-m", "${var.ram}M"],
+    ["-smp", "${var.cpu}"]
+  ]
+  shutdown_command        = "sudo /usr/sbin/shutdown -hP now"
+  ssh_username            = "root"
+  ssh_read_write_timeout  = "5m"
+  ssh_timeout             = "25m"
+  ssh_private_key_file    = data.sshkey.install.private_key_path
+  temporary_key_pair_name = var.temporary_key_pair_name
+  vm_name                 = "rhel-9.4-base.qcow2"
+}
+```
+
+::: {.notes}
+- Boot command is typed character for charater over a VNC connection
+- We run an unattended installation using kickstart with the config being supplied by an HTTP server
+- The kickstart config is templated so we can pass in variables
+- SSH keys for Ansible to use later (removed at the end of the build)
+
+:::
+
+## RHEL image
+
+#### build
+
+```{.packer code-line-numbers="|4-6|8-21|51-65|101-112" }
+build {
+  name = "harvester"
+
+  sources = [
+    "source.qemu.rhel"
+  ]
+
+  # Run Ansible playbook to do CIS hardening
+  provisioner "ansible" {
+    extra_arguments = [
+      "--extra-vars",
+      "ansible_user=root",
+      "--tags=rhel",
+      "--scp-extra-args", "'-O'",
+    ]
+    galaxy_file          = "${path.root}/../provisioners/ansible/requirements.yml"
+    galaxy_force_install = true
+    playbook_file        = "${path.root}/../provisioners/ansible/playbooks/cis_hardening.yml"
+    sftp_command         = "/usr/libexec/openssh/sftp-server -e"
+    user                 = "root"
+  }
+
+  # Remove root ssh keys and .ansible directory
+  provisioner "shell" {
+    inline = [
+      "rm -f /etc/ssh/*key*.",
+      "rm -rf /root/.ssh",
+      "rm -rf /root/.ansible",
+    ]
+    remote_folder = "/opt"
+  }
+
+  # Generate the checksum files
+  post-processor "checksum" {
+    checksum_types = ["sha256"]
+    output         = "${var.build_dir}/${local.qcow2_checksum_file}"
+  }
+
+  # Convert to raw and compress
+  post-processor "shell-local" {
+    inline = [
+      join(" ", [
+        "/usr/bin/qemu-img convert",
+        "${var.build_dir}/${local.qcow2_filename}",
+        "-O raw ${var.build_dir}/${local.raw_filename}"
+      ]),
+      "gzip ${var.build_dir}/${local.raw_filename}"
+    ]
+  }
+
+  # Upload the qcow2 file to Pulp
+  post-processor "shell-local" {
+    inline = [
+      join(" ", [
+        "ansible-playbook",
+        "${path.root}/../provisioners/ansible/playbooks/pulp_upload.yml",
+        "--extra-vars pulp_admin_password='${var.pulp_admin_password}'",
+        "--extra-vars pulp_artifact_base_path_prefix='${var.pulp_content_path_prefix}'",
+        "--extra-vars pulp_artifact_path='${abspath(var.build_dir)}/${local.qcow2_filename}'",
+        "--extra-vars pulp_artifact_repository='${var.pulp_repository_name}'",
+        "--extra-vars pulp_url='${var.pulp_server_url}'",
+        "--tags upload",
+      ])
+    ]
+  }
+
+  # Upload the compressed raw file to Pulp
+  post-processor "shell-local" {
+    inline = [
+      join(" ", [
+        "ansible-playbook",
+        "${path.root}/../provisioners/ansible/playbooks/pulp_upload.yml",
+        "--extra-vars pulp_admin_password='${var.pulp_admin_password}'",
+        "--extra-vars pulp_artifact_base_path_prefix='${var.pulp_content_path_prefix}'",
+        "--extra-vars pulp_artifact_path='${abspath(var.build_dir)}/${local.raw_filename}.gz'",
+        "--extra-vars pulp_artifact_repository='${var.pulp_repository_name}'",
+        "--extra-vars pulp_url='${var.pulp_server_url}'",
+        "--tags upload",
+      ])
+    ]
+  }
+
+  # Archive and upload the Audit report
+  post-processor "shell-local" {
+    inline = [
+      "zip --junk-paths ${source.name}_${var.image_build}_cis_report ${path.root}/../provisioners/ansible/playbooks/reports/*.json",
+      join(" ", [
+        "ansible-playbook",
+        "${path.root}/../provisioners/ansible/playbooks/pulp_upload.yml",
+        "--extra-vars pulp_admin_password='${var.pulp_admin_password}'",
+        "--extra-vars pulp_artifact_base_path_prefix='${var.pulp_content_path_prefix}'",
+        "--extra-vars pulp_artifact_path='${abspath(path.root)}/${source.name}_${var.image_build}_cis_report.zip'",
+        "--extra-vars pulp_artifact_repository='${var.pulp_repository_name}'",
+        "--extra-vars pulp_url='${var.pulp_server_url}'",
+        "--tags upload",
+      ]),
+      "rm -rf ${path.root}/../provisioners/ansible/playbooks/reports",
+    ]
+  }
+
+  # Run the terraform tests
+  post-processor "shell-local" {
+    inline = [
+      join(" ", [
+        "terraform -chdir=../terraform/modules/harvester-image test",
+        "-var image_description='Test ${source.name} image'",
+        "-var image_displayname='${local.image_name[source.name]}-test.qcow2'",
+        "-var image_url='${local.latest_image_url[source.name]}'",
+        "-var vm_user='${var.os_user[source.name]}'",
+      ])
+    ]
+  }
+}
+```
+
+## File builder to avoid repetition
+
+```{.packer code-line-numbers="|1-8|10-15"}
+source "file" "qemu-source" {
+  content =  templatefile("./source.pkr.packer.pkrtpl", {
+    build_source                       = var.build_source
+    unattended_install_config          = var.unattended_install_config
+    unattended_install_config_template = var.unattended_install_config_template
+  })
+  target =  "${var.build_path}/source.pkr.packer"
+}
+
+source "file" "harvester-build" {
+  content =  templatefile("./harvester.pkr.packer.pkrtpl", {
+    build_source = var.build_source
+  })
+  target =  "${var.build_path}/harvester.pkr.packer"
+}
+
+build {
+  sources = [
+    "source.file.qemu-source",
+    "source.file.harvester-build",
+  ]
+}
+```
+
+## Multiple OS Builds
+
+![OS build tree](./assets/os-build-tree.png)
+
+## CI/CD Build
+
+```{.yaml code-line-numbers="|3-4|27-29|52-60|70-82"}
+name: Build and test base images
+
+on:
+  workflow_call:
+    inputs:
+      build_source:
+        required: true
+        type: string
+      unattended_install_config:
+        required: true
+        type: string
+      unattended_install_config_template:
+        required: true
+        type: string
+    secrets:
+      ENG_KUBECONFIG_DATA:
+        required: true
+      ARTIFACTORY_TOKEN:
+        required: true
+      ARTIFACTORY_USER:
+        required: true
+      PULP_ADMIN_PASSWORD:
+        required: true
+
+jobs:
+  packer:
+    runs-on:
+      - self-hosted
+      - condenser-eng
+    defaults:
+      run:
+        shell: bash
+    env:
+      KUBECONFIG: ${{ github.workspace }}/terraform/harvester-image/kubeconfig
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+      - uses: hashicorp/setup-packer@main
+
+      - name: Write kubeconfig file
+        working-directory: terraform/harvester-image
+        env:
+          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_DATA }}
+        run: |
+          echo $KUBECONFIG_DATA | base64 --decode > kubeconfig
+
+      - name: Run terraform init
+        working-directory: terraform/harvester-image
+        run: terraform init -upgrade
+
+      - name: Run packer build for file builder
+        working-directory: packer/shared
+        run: >
+          packer build
+          -var build_path="../${{ inputs.build_source }}"
+          -var build_source="${{ inputs.build_source }}"
+          -var unattended_install_config="${{ inputs.unattended_install_config }}"
+          -var unattended_install_config_template="${{ inputs.unattended_install_config_template }}"
+          file-builder.pkr.packer
+
+      - name: Run packer init for qemu builder
+        working-directory: packer/${{ inputs.build_source }}
+        run: packer init .
+
+      - name: Run packer validate for qemu builder
+        working-directory: packer/${{ inputs.build_source }}
+        run: packer validate -syntax-only .
+
+      - name: Run packer build for qemu builder
+        working-directory: packer/${{ inputs.build_source }}
+        run: >
+          packer build
+          -var pulp_admin_password='${{ secrets.PULP_ADMIN_PASSWORD }}'
+          -only=harvester.qemu.${{ inputs.build_source }} .
+```
+
+## CI/CD Build RHEL
+
+```{.yaml}
+on:
+  pull_request:
+    paths:
+      - .github/workflows/build.yml
+      - packer/rhel/**
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      build_source: rhel
+      unattended_install_config_template: rhel9-ks.cfg.pkrtpl
+      unattended_install_config: ks.cfg
+    secrets:
+      KUBECONFIG_DATA: ${{ secrets.ENG_KUBECONFIG_DATA }}
+      PULP_ADMIN_PASSWORD: ${{ secrets.PULP_ADMIN_PASSWORD }}
+```

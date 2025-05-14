@@ -1,0 +1,30 @@
+---
+project:
+  type: website
+
+format:
+  html:
+    theme: solar
+  revealjs:
+    callout-appearance: simple
+    filters:
+      - _filters/slugify.lua
+    hash-type: number
+    highlight-style: github
+    history: false
+    incremental: true
+    link-external-icon: true
+    mermaid:
+      theme: dark
+    slide-number: true
+    syntax-definitions:
+      - _syntax/packer.xml
+    theme: dark
+    transition: fade
+
+website:
+  navbar:
+    tools:
+      - icon: github
+        href: https://github.com/drmatthews/talks
+  title: ""
